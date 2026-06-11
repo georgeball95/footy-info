@@ -1,0 +1,92 @@
+import time
+import re
+from datetime import date
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+import pandas as pd
+
+URL = "https://www.betfair.com/exchange/plus/football/market/1.207848678"
+
+
+def scrape_betfair_odds(url):
+    driver = webdriver.Chrome()
+    try:
+        print(f"Fetching: {url}")
+        driver.get(url)
+
+        # Accept OneTrust cookie banner
+        try:
+            WebDriverWait(driver, 10).until(
+                EC.element_to_be_clickable((By.ID, "onetrust-accept-btn-handler"))
+            ).click()
+            print("Accepted cookies.")
+            time.sleep(2)
+        except Exception:
+            print("No cookie banner detected.")
+
+        # Wait for runner rows to render
+        WebDriverWait(driver, 20).until(
+            EC.presence_of_all_elements_located(
+                (By.CSS_SELECTOR, "tr.runner-line"))
+        )
+        time.sleep(3)  # let prices populate
+
+        # Scroll through the runner list to trigger lazy-loading of all rows
+        prev_count = 0
+        for _ in range(30):
+            rows = driver.find_elements(By.CSS_SELECTOR, "tr.runner-line")
+            if rows:
+                driver.execute_script("arguments[0].scrollIntoView({block: 'end'});", rows[-1])
+            time.sleep(1)
+            new_count = len(driver.find_elements(By.CSS_SELECTOR, "tr.runner-line"))
+            if new_count == prev_count:
+                break
+            prev_count = new_count
+
+        rows = driver.find_elements(By.CSS_SELECTOR, "tr.runner-line")
+        print(f"Found {len(rows)} runners")
+
+        data = []
+        for row in rows:
+            try:
+                name = row.find_element(By.CSS_SELECTOR, "h3.runner-name").text.strip()
+            except Exception:
+                name = row.text.split("\n")[0].strip()
+
+            # Best back = last (rightmost) back cell; best lay = first (leftmost) lay cell
+            def first_price(cell):
+                m = re.search(r"\d+(?:\.\d+)?", cell.text)
+                return m.group(0) if m else "N/A"
+
+            back_cells = row.find_elements(By.CSS_SELECTOR, "td.bet-buttons.back-cell")
+            lay_cells = row.find_elements(By.CSS_SELECTOR, "td.bet-buttons.lay-cell")
+
+            back = first_price(back_cells[-1]) if back_cells else "N/A"
+            lay = first_price(lay_cells[0]) if lay_cells else "N/A"
+
+            if name:
+                data.append({"Selection": name, "Back": back, "Lay": lay})
+
+        return pd.DataFrame(data) if data else None
+    finally:
+        driver.quit()
+
+
+def main():
+    df = scrape_betfair_odds(URL)
+    if df is None or df.empty:
+        print("No odds data found.")
+        return
+    today_str = date.today().strftime("%d-%m-%Y")
+    df["Date"] = today_str
+    print("\nWorld Cup Odds:")
+    print(df.to_string(index=False))
+    filename = f"betfair_world_cup_odds_{today_str}.csv"
+    df.to_csv(filename, index=False)
+    print(f"\nSaved to {filename}")
+
+
+if __name__ == "__main__":
+    main()
